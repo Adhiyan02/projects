@@ -1,0 +1,311 @@
+package com.example.securepasswordmanager
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import android.util.Base64
+import java.text.SimpleDateFormat
+import java.util.*
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
+import kotlin.collections.ArrayList
+
+class DatabaseHelper(context: Context) :
+    SQLiteOpenHelper(context, "PasswordDB", null, 3) {
+
+    private val secretKey = "PassShieldKey123"
+
+    override fun onCreate(db: SQLiteDatabase) {
+        // Enhanced passwords table with categories and metadata
+        db.execSQL(
+            """CREATE TABLE passwords(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                site TEXT, 
+                username TEXT, 
+                password TEXT,
+                category TEXT DEFAULT 'Personal',
+                notes TEXT,
+                created_date TEXT,
+                modified_date TEXT,
+                last_used TEXT,
+                expiry_date TEXT,
+                is_favorite INTEGER DEFAULT 0
+            )"""
+        )
+        
+        // Secure notes table
+        db.execSQL(
+            """CREATE TABLE secure_notes(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                content TEXT,
+                created_date TEXT,
+                modified_date TEXT,
+                category TEXT DEFAULT 'General',
+                is_favorite INTEGER DEFAULT 0
+            )"""
+        )
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // Add new columns to existing table
+            db.execSQL("ALTER TABLE passwords ADD COLUMN category TEXT DEFAULT 'Personal'")
+            db.execSQL("ALTER TABLE passwords ADD COLUMN notes TEXT")
+            db.execSQL("ALTER TABLE passwords ADD COLUMN created_date TEXT")
+            db.execSQL("ALTER TABLE passwords ADD COLUMN modified_date TEXT")
+            db.execSQL("ALTER TABLE passwords ADD COLUMN last_used TEXT")
+            db.execSQL("ALTER TABLE passwords ADD COLUMN expiry_date TEXT")
+            db.execSQL("ALTER TABLE passwords ADD COLUMN is_favorite INTEGER DEFAULT 0")
+        }
+        if (oldVersion < 3) {
+            // Create secure notes table
+            db.execSQL(
+                """CREATE TABLE IF NOT EXISTS secure_notes(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT,
+                    content TEXT,
+                    created_date TEXT,
+                    modified_date TEXT,
+                    category TEXT DEFAULT 'General',
+                    is_favorite INTEGER DEFAULT 0
+                )"""
+            )
+        }
+    }
+
+    fun encrypt(password: String): String {
+        val cipher = Cipher.getInstance("AES")
+        val key = SecretKeySpec(secretKey.toByteArray(), "AES")
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        val encrypted = cipher.doFinal(password.toByteArray())
+        return Base64.encodeToString(encrypted, Base64.DEFAULT)
+    }
+
+    fun decrypt(encryptedPassword: String): String {
+        val cipher = Cipher.getInstance("AES")
+        val key = SecretKeySpec(secretKey.toByteArray(), "AES")
+        cipher.init(Cipher.DECRYPT_MODE, key)
+        val decoded = Base64.decode(encryptedPassword, Base64.DEFAULT)
+        return String(cipher.doFinal(decoded))
+    }
+
+    fun insertData(site: String, user: String, pass: String, category: String = "Personal", notes: String = "") {
+        val db = this.writableDatabase
+        val values = ContentValues()
+        val currentDate = getCurrentDateTime()
+
+        values.put("site", site)
+        values.put("username", user)
+        values.put("password", encrypt(pass))
+        values.put("category", category)
+        values.put("notes", notes)
+        values.put("created_date", currentDate)
+        values.put("modified_date", currentDate)
+        values.put("last_used", currentDate)
+
+        db.insert("passwords", null, values)
+    }
+
+    fun updatePassword(id: String, site: String, user: String, pass: String, category: String, notes: String) {
+        val db = this.writableDatabase
+        val values = ContentValues()
+
+        values.put("site", site)
+        values.put("username", user)
+        values.put("password", encrypt(pass))
+        values.put("category", category)
+        values.put("notes", notes)
+        values.put("modified_date", getCurrentDateTime())
+
+        db.update("passwords", values, "id=?", arrayOf(id))
+    }
+
+    fun getAllPasswords(): ArrayList<HashMap<String, String>> {
+        val list = ArrayList<HashMap<String, String>>()
+        val db = this.readableDatabase
+
+        val cursor = db.rawQuery("SELECT * FROM passwords ORDER BY is_favorite DESC, modified_date DESC", null)
+
+        if (cursor.moveToFirst()) {
+            do {
+                val map = HashMap<String, String>()
+                map["id"] = cursor.getString(0)
+                map["site"] = cursor.getString(1)
+                map["user"] = cursor.getString(2)
+                map["pass"] = cursor.getString(3)
+                map["category"] = cursor.getString(4) ?: "Personal"
+                map["notes"] = cursor.getString(5) ?: ""
+                map["created_date"] = cursor.getString(6) ?: ""
+                map["modified_date"] = cursor.getString(7) ?: ""
+                map["is_favorite"] = cursor.getString(10) ?: "0"
+                list.add(map)
+            } while (cursor.moveToNext())
+        }
+
+        cursor.close()
+        return list
+    }
+    
+    fun searchPasswords(query: String): ArrayList<HashMap<String, String>> {
+        val list = ArrayList<HashMap<String, String>>()
+        val db = this.readableDatabase
+        
+        val cursor = db.rawQuery(
+            "SELECT * FROM passwords WHERE site LIKE ? OR username LIKE ? ORDER BY is_favorite DESC",
+            arrayOf("%$query%", "%$query%")
+        )
+        
+        if (cursor.moveToFirst()) {
+            do {
+                val map = HashMap<String, String>()
+                map["id"] = cursor.getString(0)
+                map["site"] = cursor.getString(1)
+                map["user"] = cursor.getString(2)
+                map["pass"] = cursor.getString(3)
+                map["category"] = cursor.getString(4) ?: "Personal"
+                map["notes"] = cursor.getString(5) ?: ""
+                map["is_favorite"] = cursor.getString(10) ?: "0"
+                list.add(map)
+            } while (cursor.moveToNext())
+        }
+        
+        cursor.close()
+        return list
+    }
+    
+    fun getPasswordsByCategory(category: String): ArrayList<HashMap<String, String>> {
+        val list = ArrayList<HashMap<String, String>>()
+        val db = this.readableDatabase
+        
+        val cursor = db.rawQuery(
+            "SELECT * FROM passwords WHERE category=? ORDER BY is_favorite DESC, modified_date DESC",
+            arrayOf(category)
+        )
+        
+        if (cursor.moveToFirst()) {
+            do {
+                val map = HashMap<String, String>()
+                map["id"] = cursor.getString(0)
+                map["site"] = cursor.getString(1)
+                map["user"] = cursor.getString(2)
+                map["pass"] = cursor.getString(3)
+                map["category"] = cursor.getString(4) ?: "Personal"
+                map["notes"] = cursor.getString(5) ?: ""
+                map["is_favorite"] = cursor.getString(10) ?: "0"
+                list.add(map)
+            } while (cursor.moveToNext())
+        }
+        
+        cursor.close()
+        return list
+    }
+
+    fun toggleFavorite(id: String) {
+        val db = this.writableDatabase
+        db.execSQL("UPDATE passwords SET is_favorite = 1 - is_favorite WHERE id=?", arrayOf(id))
+    }
+
+    fun deletePassword(id: String) {
+        val db = this.writableDatabase
+        db.delete("passwords", "id=?", arrayOf(id))
+    }
+    
+    // Secure Notes functions
+    fun insertNote(title: String, content: String, category: String = "General") {
+        val db = this.writableDatabase
+        val values = ContentValues()
+        val currentDate = getCurrentDateTime()
+        
+        values.put("title", title)
+        values.put("content", encrypt(content))
+        values.put("category", category)
+        values.put("created_date", currentDate)
+        values.put("modified_date", currentDate)
+        
+        db.insert("secure_notes", null, values)
+    }
+    
+    fun getAllNotes(): ArrayList<HashMap<String, String>> {
+        val list = ArrayList<HashMap<String, String>>()
+        val db = this.readableDatabase
+        
+        val cursor = db.rawQuery("SELECT * FROM secure_notes ORDER BY modified_date DESC", null)
+        
+        if (cursor.moveToFirst()) {
+            do {
+                val map = HashMap<String, String>()
+                map["id"] = cursor.getString(0)
+                map["title"] = cursor.getString(1)
+                map["content"] = cursor.getString(2)
+                map["category"] = cursor.getString(4) ?: "General"
+                list.add(map)
+            } while (cursor.moveToNext())
+        }
+        
+        cursor.close()
+        return list
+    }
+    
+    fun deleteNote(id: String) {
+        val db = this.writableDatabase
+        db.delete("secure_notes", "id=?", arrayOf(id))
+    }
+    
+    // Password analysis functions
+    fun getWeakPasswords(): Int {
+        val allPasswords = getAllPasswords()
+        return allPasswords.count { 
+            try {
+                val decrypted = decrypt(it["pass"] ?: "")
+                decrypted.length < 8
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+    
+    fun getReusedPasswords(): Int {
+        val allPasswords = getAllPasswords()
+        val passwordSet = HashSet<String>()
+        var reusedCount = 0
+        
+        allPasswords.forEach {
+            val encPass = it["pass"] ?: ""
+            if (passwordSet.contains(encPass)) {
+                reusedCount++
+            } else {
+                passwordSet.add(encPass)
+            }
+        }
+        
+        return reusedCount
+    }
+    
+    fun getTotalPasswords(): Int {
+        val db = this.readableDatabase
+        val cursor = db.rawQuery("SELECT COUNT(*) FROM passwords", null)
+        cursor.moveToFirst()
+        val count = cursor.getInt(0)
+        cursor.close()
+        return count
+    }
+    
+    private fun getCurrentDateTime(): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        return sdf.format(Date())
+    }
+    
+    fun exportData(): String {
+        val passwords = getAllPasswords()
+        val notes = getAllNotes()
+        
+        val exportData = HashMap<String, Any>()
+        exportData["passwords"] = passwords
+        exportData["notes"] = notes
+        exportData["export_date"] = getCurrentDateTime()
+        
+        return com.google.gson.Gson().toJson(exportData)
+    }
+}
